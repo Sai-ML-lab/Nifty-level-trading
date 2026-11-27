@@ -4,7 +4,7 @@
 
 The app uses Upstox REST APIs. NIFTY spot candles are requested from the V3 intraday historical-candle endpoint at 5-minute granularity; daily candles use V3 historical candles. Upstox option contracts supply expiry, instrument keys and lot sizes; the option-chain endpoint supplies call/put market data, including LTP, bid/ask, volume, OI, previous OI and Greeks. All timestamps are interpreted in `Asia/Kolkata`.
 
-Only fully completed spot candles enter the strategy. Candle timestamps are treated as candle start times and a bar is complete only after its five-minute interval ends. Duplicate timestamps are removed and candles are sorted ascending.
+Only fully completed spot candles enter the strategy. Candle timestamps are treated as candle start times and a bar is complete only after its five-minute interval ends. Duplicate timestamps are removed and candles are sorted ascending. The dashboard displays the completed candle as a start/end window (for example, 14:05-14:10), separately from the last successful market-refresh timestamp. It also displays the next expected five-minute close countdown, calculated at page-render time; the countdown does not itself trigger API calls or update without a page rerun.
 
 ## 2. Levels
 
