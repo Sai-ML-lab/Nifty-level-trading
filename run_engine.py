@@ -40,7 +40,9 @@ def main():
             time.sleep(max(15, args.poll_seconds))
             continue
         try:
-            result = engine.run_once(now=now, execute_paper=not args.no_paper)
+            # Let run_once timestamp the completed refresh after its API work, rather
+            # than recording the loop-start time as though it were the fetch completion.
+            result = engine.run_once(execute_paper=not args.no_paper)
             print(f"{result['timestamp']} spot={result['spot']:.2f} candles={len(result['candles'])} "
                   f"signals={len(result['signals'])} events={len(result['events'])} PCR={result['option_summary'].get('pcr')}", flush=True)
             for event in result["events"]:
