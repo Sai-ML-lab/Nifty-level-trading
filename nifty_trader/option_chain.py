@@ -223,6 +223,8 @@ def atm_option_chain_window(df: pd.DataFrame, spot: float, strikes_each_side: in
     if df.empty or not pd.notna(spot) or float(spot) <= 0:
         return pd.DataFrame()
     data = df.copy()
+    # Use the dashboard's NIFTY spot reference consistently for displayed strike distance.
+    data["spot"] = float(spot)
     data["strike"] = pd.to_numeric(data["strike"], errors="coerce")
     strikes = sorted(float(x) for x in data["strike"].dropna().unique())
     if not strikes:
@@ -279,7 +281,11 @@ def choose_expiry(expiry_chains: dict[str, pd.DataFrame], spot: float,
         dte = (exp_date - today).days
         if dte < 0:
             continue
-        candidates = add_option_quality_metrics(frame[frame.option_type == option_type], cfg)
+        candidate_frame = frame[frame.option_type == option_type].copy()
+        # Apply the OTM band to the same NIFTY spot used for signal evaluation,
+        # not a potentially lagged underlying_spot_price embedded in a chain row.
+        candidate_frame["spot"] = float(spot)
+        candidates = add_option_quality_metrics(candidate_frame, cfg)
         candidates = candidates[candidates.liquidity_eligible].copy()
         if candidates.empty:
             continue
