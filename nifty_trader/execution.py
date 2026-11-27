@@ -106,12 +106,19 @@ def _revalidate_staged_order(order: dict, payload: dict, *, cfg, client) -> None
     if not expiry:
         raise RuntimeError("Option expiry missing from live order payload")
     chain = client.option_chain(cfg.instrument_key, str(expiry))
-    from .option_chain import normalize_option_chain
+    from .option_chain import normalize_option_chain, is_within_otm_band, otm_distance_points
     frame = normalize_option_chain(chain)
     quote_rows = frame[frame.instrument_key == order["instrument_key"]]
     if quote_rows.empty:
         raise RuntimeError("Selected option contract is no longer quoted at approval time")
     quote = quote_rows.iloc[-1]
+    if order["side"] == "BUY" and not is_within_otm_band(
+        str(quote.option_type), float(quote.strike), float(quote.spot), cfg
+    ):
+        distance = otm_distance_points(str(quote.option_type), float(quote.strike), float(quote.spot))
+        low = float(getattr(cfg, "option_otm_min_points", 150.0))
+        high = float(getattr(cfg, "option_otm_max_points", 200.0))
+        raise RuntimeError(f"Selected contract is {distance:.1f} points OTM; required band is {low:.0f}-{high:.0f}")
     bid = float(quote.bid) if pd.notna(quote.bid) else 0.0
     ask = float(quote.ask) if pd.notna(quote.ask) else 0.0
     if bid <= 0 or ask <= 0 or ask < bid:
