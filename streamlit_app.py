@@ -76,6 +76,10 @@ with st.sidebar:
     if rsi_required != initial_rsi_required:
         settings_store.set_state("rsi_divergence_required", "1" if rsi_required else "0")
         st.success("RSI rule saved. The next engine cycle will use this setting.")
+    if settings.option_selection_mode == "OTM_BAND":
+        st.caption(f"Option selection: LONG buys CE {settings.option_otm_min_points:.0f}-{settings.option_otm_max_points:.0f} points above spot; SHORT buys PE the same distance below spot. No ATM fallback.")
+    else:
+        st.caption(f"Option selection: NEAR_ATM within {settings.option_moneyness_pct:.2%} of spot.")
     st.caption("Keep the same rule settings throughout a paper-trading evaluation week. Changing a gate starts a new experiment.")
 
 engine = get_engine()
@@ -345,7 +349,7 @@ if result:
             st.caption("Liquidity PASS means valid bid/ask, premium, spread, volume, OI and configured strike-distance rule all passed. In OTM_BAND mode the signed CE/PE distance must be within the configured 150–200 point band. Spread % is (ask − bid) / ask × 100. Greeks are quote-time estimates, not guarantees.")
             eligible = quality[quality["liquidity_eligible"]].copy()
             if not eligible.empty:
-                st.markdown("#### Eligible OTM contracts across displayed expiries")
+                st.markdown(f"#### Eligible OTM contracts in {selected_expiry}")
                 eligible_cols = [c for c in [
                     "expiry", "option_type", "strike", "otm_distance_points", "ltp", "bid", "ask",
                     "spread_pct", "volume", "oi", "delta", "iv", "theta", "liquidity_score",
@@ -414,9 +418,16 @@ with live:
     if not live_signals.empty:
         ready = live_signals[live_signals.status == "READY"]
         if not ready.empty:
+            ready = _expand_contract_details(ready, source="signal")
             ready_by_id = {x["signal_id"]: x for x in ready.to_dict("records")}
             selected_signal_id = st.selectbox("Signal to stage for live approval", options=list(ready_by_id),
-                format_func=lambda key: f"{ready_by_id[key]['created_at']} · {ready_by_id[key]['direction']} · {ready_by_id[key]['level_name']} · {ready_by_id[key]['expiry']} {ready_by_id[key]['strike']} {ready_by_id[key]['option_type']}")
+                format_func=lambda key: (
+                    f"{ready_by_id[key]['created_at']} · {ready_by_id[key]['direction']} · "
+                    f"{ready_by_id[key]['expiry']} {ready_by_id[key]['strike']} {ready_by_id[key]['option_type']} · "
+                    f"{float(ready_by_id[key].get('contract_otm_distance_points') or 0):.0f} pts OTM · "
+                    f"premium ₹{float(ready_by_id[key].get('option_ask') or 0):.2f} · "
+                    f"delta {float(ready_by_id[key].get('contract_delta') or 0):.2f}"
+                ))
             if st.button("Stage live entry for approval", disabled=not settings.live_is_armed):
                 try:
                     out = engine.prepare_live_order(selected_signal_id)
