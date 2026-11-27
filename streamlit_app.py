@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
+from nifty_trader.market_clock import candle_countdown, candle_window
+
 from nifty_trader.backtest import backtest_spot
 from nifty_trader.option_chain import add_option_quality_metrics, atm_option_chain_window
 from nifty_trader.config import settings
@@ -22,6 +24,40 @@ st.set_page_config(page_title="NIFTY Level Trader", page_icon="📈", layout="wi
 @st.cache_resource
 def get_engine():
     return TradingEngine(settings)
+
+
+def _expand_contract_details(frame: pd.DataFrame, *, source: str) -> pd.DataFrame:
+    """Expose option contract details stored in signal/trade audit payloads."""
+    if frame.empty:
+        return frame.copy()
+    rows = []
+    for record in frame.to_dict("records"):
+        payload = record.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+        elif not isinstance(payload, dict):
+            payload = {}
+        quote = payload.get("entry_quote", {}) if source == "trade" else payload
+        quote = quote if isinstance(quote, dict) else {}
+        merged = dict(record)
+        for key in ("expiry", "strike", "option_type", "otm_distance_points", "delta", "iv",
+                    "theta", "gamma", "vega", "ltp", "bid", "ask", "spread_pct",
+                    "volume", "oi", "liquidity_status", "selection_mode"):
+            value = quote.get(key)
+            if value is None and source == "signal":
+                value = payload.get(key)
+            if value is None and source == "signal":
+                aliases = {"delta": "option_delta", "iv": "option_iv", "theta": "option_theta",
+                           "gamma": "option_gamma", "vega": "option_vega", "ltp": "option_ltp",
+                           "bid": "option_bid", "ask": "option_ask", "spread_pct": "option_spread_pct",
+                           "volume": "option_volume", "oi": "option_oi"}
+                value = payload.get(aliases.get(key, key))
+            merged[f"contract_{key}"] = value
+        rows.append(merged)
+    return pd.DataFrame(rows)
 
 
 # Persist this rule switch in SQLite so it is honoured by both the Streamlit
@@ -91,12 +127,20 @@ if result:
     last = result["latest_candle"]
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("NIFTY spot", f"{result['spot']:,.2f}")
-    k2.metric("Latest completed bar", str(last["timestamp"])[11:16])
+    bar_start, bar_end = candle_window(last["timestamp"], 5)
+    k2.metric("Latest completed bar", f"{bar_start:%H:%M}–{bar_end:%H:%M}")
     rsi_value = result.get("indicator_context", {}).get("rsi")
     pcr_value = result["option_summary"].get("pcr")
     k3.metric("RSI(14)", f"{rsi_value:.1f}" if rsi_value is not None and pd.notna(rsi_value) else "N/A")
     k4.metric("PCR (nearest expiry)", f"{pcr_value:.2f}" if pcr_value is not None and pd.notna(pcr_value) else "N/A")
     k5.metric("Spot data age", f"{result['data_age_seconds']:.0f}s")
+    refreshed = pd.Timestamp(result.get("timestamp") or store.get_state("last_refresh", ""))
+    if pd.notna(refreshed):
+        refreshed = refreshed.tz_localize(IST) if refreshed.tzinfo is None else refreshed.tz_convert(IST)
+        refreshed_label = refreshed.strftime("%d %b %Y %H:%M:%S IST")
+    else:
+        refreshed_label = "N/A"
+    st.caption(f"Last successful refresh: {refreshed_label} · Next expected 5-minute candle close: {candle_countdown()} (countdown as of this page render)")
     opt_age = result.get("options_age_seconds")
     if opt_age is not None and opt_age > 180:
         st.warning(f"Latest persisted option-chain snapshot is {opt_age:.0f}s old. Do not treat the option-chain metrics as live until a fresh snapshot is collected.")
@@ -204,7 +248,14 @@ if result:
 
     st.subheader("Latest signals")
     if result["signals"]:
-        st.dataframe(pd.DataFrame(result["signals"]), use_container_width=True, hide_index=True)
+        signal_frame = _expand_contract_details(pd.DataFrame(result["signals"]), source="signal")
+        signal_cols = [c for c in [
+            "direction", "entry_mode", "level_name", "status", "expiry", "option_type",
+            "strike", "contract_otm_distance_points", "option_ltp", "contract_bid", "contract_ask",
+            "option_spread_pct", "option_volume", "option_oi", "contract_delta", "contract_iv",
+            "contract_theta", "liquidity_status", "reward_risk", "reason",
+        ] if c in signal_frame.columns]
+        st.dataframe(signal_frame[signal_cols], use_container_width=True, hide_index=True)
     else:
         st.info("No new signal passed the current entry and confluence rules on the latest completed candle.")
 
@@ -282,7 +333,8 @@ if result:
             view_cols = [c for c in [
                 "strike", "option_type", "ltp", "bid", "ask", "spread", "spread_pct",
                 "bid_qty", "ask_qty", "volume", "oi", "day_change_oi", "intraday_change_oi",
-                "session_change_oi", "iv", "delta", "liquidity_score", "liquidity_eligible",
+                "session_change_oi", "otm_distance_points", "iv", "delta", "theta", "gamma", "vega",
+                "liquidity_score", "liquidity_eligible",
                 "liquidity_status",
             ] if c in quality.columns]
             quality_view = quality[view_cols].sort_values(["strike", "option_type"]).copy()
@@ -290,7 +342,20 @@ if result:
                 quality_view["spread_pct"] = quality_view["spread_pct"] * 100.0
             quality_view = quality_view.rename(columns={"spread_pct": "spread_pct_of_ask"})
             st.dataframe(quality_view, use_container_width=True, hide_index=True)
-            st.caption("Liquidity PASS means valid bid/ask, configured premium range, maximum spread, minimum traded volume/OI and maximum ATM distance all passed. Spread % is (ask − bid) / ask × 100. It is a quote-quality filter, not a profit prediction.")
+            st.caption("Liquidity PASS means valid bid/ask, premium, spread, volume, OI and configured strike-distance rule all passed. In OTM_BAND mode the signed CE/PE distance must be within the configured 150–200 point band. Spread % is (ask − bid) / ask × 100. Greeks are quote-time estimates, not guarantees.")
+            eligible = quality[quality["liquidity_eligible"]].copy()
+            if not eligible.empty:
+                st.markdown("#### Eligible OTM contracts across displayed expiries")
+                eligible_cols = [c for c in [
+                    "expiry", "option_type", "strike", "otm_distance_points", "ltp", "bid", "ask",
+                    "spread_pct", "volume", "oi", "delta", "iv", "theta", "liquidity_score",
+                ] if c in eligible.columns]
+                eligible = eligible.sort_values(["liquidity_score", "spread_pct"], ascending=[False, True]).head(20)
+                eligible_view = eligible[eligible_cols].copy()
+                if "spread_pct" in eligible_view:
+                    eligible_view["spread_pct"] = eligible_view["spread_pct"] * 100.0
+                st.dataframe(eligible_view, use_container_width=True, hide_index=True)
+                st.caption("These are quote-qualified contracts, not trade signals. A strategy breakout and risk checks must still pass.")
     else:
         st.info("No option-chain snapshot is available. Check the Upstox option-chain API and contract master response.")
 
@@ -324,10 +389,23 @@ with paper:
     p_open = store.open_trades("PAPER")
     st.metric("Open paper positions", len(p_open))
     if not p_open.empty:
-        st.dataframe(p_open, use_container_width=True, hide_index=True)
+        open_view = _expand_contract_details(p_open, source="trade")
+        open_cols = [c for c in [
+            "direction", "contract_expiry", "contract_option_type", "contract_strike",
+            "contract_otm_distance_points", "entry_price", "contract_bid", "contract_ask",
+            "contract_delta", "contract_iv", "contract_theta", "quantity", "premium_stop",
+            "spot_stop", "spot_target", "opened_at",
+        ] if c in open_view.columns]
+        st.dataframe(open_view[open_cols], use_container_width=True, hide_index=True)
     p_all = store.trades("CLOSED")
     if not p_all.empty:
-        st.dataframe(p_all[p_all.mode == "PAPER"], use_container_width=True, hide_index=True)
+        closed_view = _expand_contract_details(p_all[p_all.mode == "PAPER"], source="trade")
+        closed_cols = [c for c in [
+            "direction", "contract_expiry", "contract_option_type", "contract_strike",
+            "contract_otm_distance_points", "entry_price", "exit_price", "quantity",
+            "gross_pnl", "charges", "net_pnl", "exit_reason", "opened_at", "exited_at",
+        ] if c in closed_view.columns]
+        st.dataframe(closed_view[closed_cols], use_container_width=True, hide_index=True)
     st.caption("Paper entries use ask + configured slippage; exits use executable bid − slippage. The configured 35% premium stop is a modeled stop risk, not a guaranteed maximum loss: long-option maximum loss remains the full premium paid if a stop cannot execute.")
 
 with live:
@@ -452,4 +530,4 @@ if spot_file and st.button("Run spot signal backtest"):
     except Exception as exc:
         st.error(f"Backtest failed: {type(exc).__name__}: {exc}")
 
-st.caption(f"Local DB: {settings.db_path} · Last refresh: {store.get_state('last_refresh', 'not yet refreshed')}")
+st.caption(f"Local DB: {settings.db_path} · Last successful market refresh: {store.get_state('last_refresh', 'not yet refreshed')}")
