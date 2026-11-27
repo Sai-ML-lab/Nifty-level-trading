@@ -30,6 +30,8 @@ def normalize_option_chain(chain: list[dict], snapshot_ts=None) -> pd.DataFrame:
                 "bid": float(market.get("bid_price") or 0), "bid_qty": int(market.get("bid_qty") or 0),
                 "ask": float(market.get("ask_price") or 0), "ask_qty": int(market.get("ask_qty") or 0),
                 "delta": float(greeks.get("delta") or 0), "iv": float(greeks.get("iv") or 0),
+                "theta": float(greeks.get("theta") or 0), "gamma": float(greeks.get("gamma") or 0),
+                "vega": float(greeks.get("vega") or 0),
                 "spot": float(spot or 0),
             })
     return pd.DataFrame(records)
@@ -129,8 +131,31 @@ def chain_summary(df: pd.DataFrame) -> dict:
     }
 
 
+def otm_distance_points(option_type: str, strike: float, spot: float) -> float:
+    """Return positive points OTM for the matching long option side; <=0 is ATM/ITM."""
+    kind = str(option_type).upper()
+    if kind == "CE":
+        return float(strike) - float(spot)
+    if kind == "PE":
+        return float(spot) - float(strike)
+    raise ValueError("option_type must be CE or PE")
+
+
+def is_within_otm_band(option_type: str, strike: float, spot: float, cfg) -> bool:
+    """Apply the hard directional OTM band when OTM_BAND mode is configured."""
+    mode = str(getattr(cfg, "option_selection_mode", "NEAR_ATM")).upper()
+    if mode != "OTM_BAND":
+        return True
+    low = float(getattr(cfg, "option_otm_min_points", 150.0))
+    high = float(getattr(cfg, "option_otm_max_points", 200.0))
+    if low < 0 or high < low:
+        raise ValueError("Invalid OTM band: require 0 <= OPTION_OTM_MIN_POINTS <= OPTION_OTM_MAX_POINTS")
+    distance = otm_distance_points(option_type, strike, spot)
+    return low <= distance <= high
+
+
 def add_option_quality_metrics(df: pd.DataFrame, cfg) -> pd.DataFrame:
-    """Add transparent quote/spread/volume/OI/moneyness eligibility diagnostics."""
+    """Add transparent quote/spread/volume/OI and configured strike-distance diagnostics."""
     if df.empty:
         return df.copy()
     out = df.copy()
@@ -141,6 +166,30 @@ def add_option_quality_metrics(df: pd.DataFrame, cfg) -> pd.DataFrame:
     out["spread"] = out["ask"] - out["bid"]
     out["spread_pct"] = out["spread"] / out["ask"].where(out["ask"] > 0)
     out["moneyness_pct"] = (out["strike"] - out["spot"]).abs() / out["spot"].where(out["spot"] > 0)
+    kinds = out["option_type"].astype(str).str.upper()
+    out["otm_distance_points"] = float("nan")
+    ce_mask, pe_mask = kinds.eq("CE"), kinds.eq("PE")
+    out.loc[ce_mask, "otm_distance_points"] = out.loc[ce_mask, "strike"] - out.loc[ce_mask, "spot"]
+    out.loc[pe_mask, "otm_distance_points"] = out.loc[pe_mask, "spot"] - out.loc[pe_mask, "strike"]
+    selection_mode = str(getattr(cfg, "option_selection_mode", "NEAR_ATM")).upper()
+    if selection_mode == "OTM_BAND":
+        otm_min = float(getattr(cfg, "option_otm_min_points", 150.0))
+        otm_max = float(getattr(cfg, "option_otm_max_points", 200.0))
+        if otm_min < 0 or otm_max < otm_min:
+            raise ValueError("Invalid OTM band: require 0 <= OPTION_OTM_MIN_POINTS <= OPTION_OTM_MAX_POINTS")
+        out["otm_band_ok"] = out["otm_distance_points"].between(otm_min, otm_max, inclusive="both")
+        out["moneyness_ok"] = out["otm_band_ok"]
+        distance_filter_label = f"OTM-distance band ({otm_min:g}-{otm_max:g} points)"
+    elif selection_mode == "NEAR_ATM":
+        max_pct = float(getattr(cfg, "option_moneyness_pct", 0.01))
+        out["otm_band_ok"] = out["otm_distance_points"].between(
+            float(getattr(cfg, "option_otm_min_points", 150.0)),
+            float(getattr(cfg, "option_otm_max_points", 200.0)), inclusive="both")
+        out["moneyness_ok"] = out["moneyness_pct"].le(max_pct)
+        distance_filter_label = f"near-ATM distance ({max_pct:.2%})"
+    else:
+        raise ValueError("OPTION_SELECTION_MODE must be OTM_BAND or NEAR_ATM")
+    out["selection_mode"] = selection_mode
     out["quote_valid"] = (out["bid"].gt(0) & out["ask"].gt(0) & out["ask"].ge(out["bid"]))
     out["premium_ok"] = (out["ltp"].between(cfg.min_premium_inr, cfg.max_premium_inr)
                          & out["ask"].between(cfg.min_premium_inr, cfg.max_premium_inr))
@@ -155,7 +204,7 @@ def add_option_quality_metrics(df: pd.DataFrame, cfg) -> pd.DataFrame:
             label for label, ok in (
                 ("invalid quote", r["quote_valid"]), ("premium filter", r["premium_ok"]),
                 ("spread filter", r["spread_ok"]), ("volume filter", r["volume_ok"]),
-                ("OI filter", r["oi_ok"]), ("ATM-distance filter", r["moneyness_ok"]),
+                ("OI filter", r["oi_ok"]), (distance_filter_label, r["moneyness_ok"]),
             ) if not bool(ok)
         ), axis=1
     )
@@ -185,7 +234,8 @@ def atm_option_chain_window(df: pd.DataFrame, spot: float, strikes_each_side: in
     value_columns = [c for c in (
         "ltp", "bid", "ask", "spread", "spread_pct", "volume", "oi",
         "day_change_oi", "intraday_change_oi", "session_change_oi", "bid_qty", "ask_qty",
-        "liquidity_score", "liquidity_eligible", "liquidity_status", "iv", "delta",
+        "otm_distance_points", "otm_band_ok", "liquidity_score", "liquidity_eligible",
+        "liquidity_status", "iv", "delta", "theta", "gamma", "vega",
     ) if c in data.columns]
     if data.empty:
         return pd.DataFrame()
