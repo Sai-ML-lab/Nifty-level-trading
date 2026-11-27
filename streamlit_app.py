@@ -47,14 +47,16 @@ def _expand_contract_details(frame: pd.DataFrame, *, source: str) -> pd.DataFram
                     "theta", "gamma", "vega", "ltp", "bid", "ask", "spread_pct",
                     "volume", "oi", "liquidity_status", "selection_mode"):
             value = quote.get(key)
-            if value is None and source == "signal":
+            if value is None:
                 value = payload.get(key)
-            if value is None and source == "signal":
+            if value is None:
                 aliases = {"delta": "option_delta", "iv": "option_iv", "theta": "option_theta",
                            "gamma": "option_gamma", "vega": "option_vega", "ltp": "option_ltp",
                            "bid": "option_bid", "ask": "option_ask", "spread_pct": "option_spread_pct",
                            "volume": "option_volume", "oi": "option_oi"}
                 value = payload.get(aliases.get(key, key))
+            if value is None:
+                value = record.get(key, record.get(aliases.get(key, key) if source == "signal" else key))
             merged[f"contract_{key}"] = value
         rows.append(merged)
     return pd.DataFrame(rows)
@@ -255,8 +257,8 @@ if result:
         signal_frame = _expand_contract_details(pd.DataFrame(result["signals"]), source="signal")
         signal_cols = [c for c in [
             "direction", "entry_mode", "level_name", "status", "expiry", "option_type",
-            "strike", "contract_otm_distance_points", "option_ltp", "contract_bid", "contract_ask",
-            "option_spread_pct", "option_volume", "option_oi", "contract_delta", "contract_iv",
+            "strike", "contract_otm_distance_points", "contract_ltp", "contract_bid", "contract_ask",
+            "contract_spread_pct", "contract_volume", "contract_oi", "contract_delta", "contract_iv",
             "contract_theta", "liquidity_status", "reward_risk", "reason",
         ] if c in signal_frame.columns]
         st.dataframe(signal_frame[signal_cols], use_container_width=True, hide_index=True)
@@ -425,7 +427,7 @@ with live:
                     f"{ready_by_id[key]['created_at']} · {ready_by_id[key]['direction']} · "
                     f"{ready_by_id[key]['expiry']} {ready_by_id[key]['strike']} {ready_by_id[key]['option_type']} · "
                     f"{float(ready_by_id[key].get('contract_otm_distance_points') or 0):.0f} pts OTM · "
-                    f"premium ₹{float(ready_by_id[key].get('option_ask') or 0):.2f} · "
+                    f"premium ₹{float(ready_by_id[key].get('contract_ask') or 0):.2f} · "
                     f"delta {float(ready_by_id[key].get('contract_delta') or 0):.2f}"
                 ))
             if st.button("Stage live entry for approval", disabled=not settings.live_is_armed):
