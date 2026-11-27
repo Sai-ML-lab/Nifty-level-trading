@@ -65,7 +65,7 @@ Edit `.env` and add your **current Upstox access/analytics token locally**. Neve
 streamlit run streamlit_app.py
 ```
 
-Click **Refresh market data** during the NSE session. This fetches completed 5-minute NIFTY candles, option contracts and chains; computes levels and signals; stores option snapshots; and evaluates paper entries/exits.
+Click **Run one market cycle** during the NSE session. This fetches completed 5-minute NIFTY candles, option contracts and chains; computes levels and signals; stores option snapshots; and evaluates paper entries/exits. The dashboard separately displays the completed candle's start/end, successful refresh timestamp and next expected 5-minute candle close. The countdown is calculated at page render time.
 
 ### Run the continuous engine instead
 
