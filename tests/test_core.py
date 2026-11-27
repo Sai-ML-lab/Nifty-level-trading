@@ -1176,3 +1176,152 @@ def test_upstox_cancel_uses_v3_hft_endpoint():
     assert url == "https://api-hft.upstox.com/v3/order/cancel"
     assert kwargs["params"] == {"order_id": "cancel-me"}
     assert kwargs["headers"]["Authorization"] == "Bearer access"
+
+
+
+def _otm_band_fixture():
+    rows = []
+    for option_type, strikes in (
+        ("CE", [25700, 25849, 25850, 25875, 25900, 25901]),
+        ("PE", [25700, 25551, 25550, 25525, 25500, 25499]),
+    ):
+        for index, strike in enumerate(strikes):
+            prefix = "CE" if option_type == "CE" else "PE"
+            rows.append({
+                "timestamp": "2026-11-27T10:00:00+05:30",
+                "expiry": "2026-12-03",
+                "instrument_key": f"{prefix}-{strike}",
+                "option_type": option_type,
+                "strike": strike,
+                "spot": 25700.0,
+                "ltp": 100.0,
+                "bid": 99.0,
+                "ask": 101.0,
+                "bid_qty": 100 + index,
+                "ask_qty": 100 + index,
+                "volume": 5000,
+                "oi": 50000,
+                "delta": 0.25 if option_type == "CE" else -0.25,
+                "iv": 14.0,
+                "theta": -4.5,
+                "gamma": 0.001,
+                "vega": 8.0,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_directional_otm_band_includes_only_150_to_200_points():
+    from nifty_trader.option_chain import add_option_quality_metrics
+    frame = _otm_band_fixture()
+    settings = cfg(option_selection_mode="OTM_BAND",
+                   option_otm_min_points=150, option_otm_max_points=200)
+    out = add_option_quality_metrics(frame, settings)
+
+    ce = out[out.option_type == "CE"].set_index("strike")
+    pe = out[out.option_type == "PE"].set_index("strike")
+
+    assert bool(ce.loc[25850, "liquidity_eligible"])
+    assert bool(ce.loc[25875, "liquidity_eligible"])
+    assert bool(ce.loc[25900, "liquidity_eligible"])
+    assert not bool(ce.loc[25849, "liquidity_eligible"])
+    assert not bool(ce.loc[25901, "liquidity_eligible"])
+    assert not bool(ce.loc[25700, "liquidity_eligible"])
+
+    assert bool(pe.loc[25550, "liquidity_eligible"])
+    assert bool(pe.loc[25525, "liquidity_eligible"])
+    assert bool(pe.loc[25500, "liquidity_eligible"])
+    assert not bool(pe.loc[25551, "liquidity_eligible"])
+    assert not bool(pe.loc[25499, "liquidity_eligible"])
+    assert not bool(pe.loc[25700, "liquidity_eligible"])
+
+    assert ce.loc[25850, "otm_distance_points"] == 150
+    assert pe.loc[25500, "otm_distance_points"] == 200
+
+
+def test_expiry_selector_never_falls_back_to_atm_when_otm_band_empty():
+    settings = cfg(option_selection_mode="OTM_BAND",
+                   option_otm_min_points=150, option_otm_max_points=200)
+    frame = _otm_band_fixture()
+    only_near_atm = frame[frame.strike.isin([25700, 25750, 25650])].copy()
+    selected = choose_expiry(
+        {"2026-12-03": only_near_atm}, 25700, "LONG", settings,
+        as_of=pd.Timestamp("2026-11-27 10:00:00", tz=IST),
+    )
+    assert selected is None
+
+
+def test_expiry_selector_returns_contract_in_correct_directional_otm_band():
+    settings = cfg(option_selection_mode="OTM_BAND",
+                   option_otm_min_points=150, option_otm_max_points=200)
+    frame = _otm_band_fixture()
+    chains = {"2026-12-03": frame}
+    as_of = pd.Timestamp("2026-11-27 10:00:00", tz=IST)
+
+    call = choose_expiry(chains, 25700, "LONG", settings, as_of=as_of)
+    put = choose_expiry(chains, 25700, "SHORT", settings, as_of=as_of)
+
+    assert call is not None and call["option_type"] == "CE"
+    assert 150 <= call["otm_distance_points"] <= 200
+    assert put is not None and put["option_type"] == "PE"
+    assert 150 <= put["otm_distance_points"] <= 200
+    assert call["delta"] > 0
+    assert put["delta"] < 0
+
+
+def test_otm_band_invalid_configuration_fails_closed():
+    from nifty_trader.option_chain import add_option_quality_metrics
+    frame = _otm_band_fixture()
+    settings = cfg(option_selection_mode="OTM_BAND",
+                   option_otm_min_points=220, option_otm_max_points=150)
+    with pytest.raises(ValueError, match="Invalid OTM band"):
+        add_option_quality_metrics(frame, settings)
+
+
+def test_normalize_option_chain_keeps_full_greeks_for_selected_contract():
+    payload = [{
+        "expiry": "2026-12-03",
+        "strike_price": 25850,
+        "underlying_spot_price": 25700,
+        "call_options": {
+            "instrument_key": "CE-25850",
+            "market_data": {"ltp": 100, "volume": 5000, "oi": 50000,
+                            "bid_price": 99, "ask_price": 101},
+            "option_greeks": {"delta": 0.25, "iv": 14, "theta": -4.5,
+                              "gamma": 0.001, "vega": 8.0},
+        },
+        "put_options": {},
+    }]
+    normalized = normalize_option_chain(payload)
+    row = normalized.iloc[0]
+    assert row.delta == pytest.approx(0.25)
+    assert row.iv == pytest.approx(14)
+    assert row.theta == pytest.approx(-4.5)
+    assert row.gamma == pytest.approx(0.001)
+    assert row.vega == pytest.approx(8.0)
+
+
+def test_market_clock_displays_completed_bar_window_and_next_close():
+    from nifty_trader.market_clock import candle_window, next_candle_close, candle_countdown
+    start, end = candle_window("2026-11-27T14:05:00+05:30")
+    assert start.strftime("%H:%M") == "14:05"
+    assert end.strftime("%H:%M") == "14:10"
+
+    now = pd.Timestamp("2026-11-27 14:11:00", tz=IST)
+    assert next_candle_close(now).strftime("%H:%M") == "14:15"
+    assert candle_countdown(now) == "14:15 IST (4m 00s)"
+
+
+def test_market_clock_advances_when_now_is_exactly_on_candle_boundary():
+    from nifty_trader.market_clock import next_candle_close
+    now = pd.Timestamp("2026-11-27 14:15:00", tz=IST)
+    assert next_candle_close(now).strftime("%H:%M") == "14:20"
+
+
+def test_streamlit_displays_refresh_time_candle_window_and_contract_distance():
+    from pathlib import Path
+    source = Path("streamlit_app.py").read_text(encoding="utf-8")
+    assert "Last successful refresh:" in source
+    assert "Next expected 5-minute candle close:" in source
+    assert 'candle_window(last["timestamp"], 5)' in source
+    assert "contract_otm_distance_points" in source
+    assert "Eligible OTM contracts" in source
