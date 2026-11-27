@@ -83,7 +83,7 @@ python run_engine.py --once --no-paper
 
 ## Configuration
 
-All settings are in `.env.example`, including independent immediate/retest switches, SMA/FVG/RSI requirements, breakout/retest buffers, expiry and liquidity thresholds, lot/risk limits, slippage, data staleness, daily limits, and live arming flags.
+All settings are in `.env.example`, including independent immediate/retest switches, SMA/FVG/RSI requirements, breakout/retest buffers, OPTION_SELECTION_MODE=OTM_BAND, the 150-200 point CE/PE OTM band, expiry and liquidity thresholds, lot/risk limits, slippage, data staleness, daily limits, and live arming flags. To intentionally use the near-ATM approach instead, select OPTION_SELECTION_MODE=NEAR_ATM and configure OPTION_MONEYNESS_PCT.
 
 The default live flags are both off:
 
