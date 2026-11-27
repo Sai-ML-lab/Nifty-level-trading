@@ -79,6 +79,7 @@ def _revalidate_staged_order(order: dict, payload: dict, *, cfg, client) -> None
     now = pd.Timestamp.now(tz=IST)
     option = payload.get("option", {})
     expiry = option.get("expiry") or payload.get("expiry")
+    fresh_spot = None
     if order["side"] == "BUY":
         signal = payload.get("signal", {})
         created_at = signal.get("created_at")
@@ -96,6 +97,7 @@ def _revalidate_staged_order(order: dict, payload: dict, *, cfg, client) -> None
         if data_age > cfg.stale_data_seconds:
             raise TimeoutError(f"NIFTY spot data is stale at approval time ({data_age:.0f}s)")
         spot = float(last.close)
+        fresh_spot = spot
         level = float(signal["level_price"])
         stop, target = float(signal["spot_stop"]), float(signal["spot_target"])
         buffer = float(getattr(cfg, "breakout_buffer_points", 0.0))
@@ -108,6 +110,8 @@ def _revalidate_staged_order(order: dict, payload: dict, *, cfg, client) -> None
     chain = client.option_chain(cfg.instrument_key, str(expiry))
     from .option_chain import normalize_option_chain, is_within_otm_band, otm_distance_points
     frame = normalize_option_chain(chain)
+    if fresh_spot is not None:
+        frame["spot"] = fresh_spot
     quote_rows = frame[frame.instrument_key == order["instrument_key"]]
     if quote_rows.empty:
         raise RuntimeError("Selected option contract is no longer quoted at approval time")
