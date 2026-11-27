@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime data / credentials / broker state
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
