@@ -196,7 +196,6 @@ def add_option_quality_metrics(df: pd.DataFrame, cfg) -> pd.DataFrame:
     out["spread_ok"] = out["spread_pct"].le(cfg.max_spread_pct)
     out["volume_ok"] = out["volume"].ge(cfg.min_option_volume)
     out["oi_ok"] = out["oi"].ge(cfg.min_option_oi)
-    out["moneyness_ok"] = out["moneyness_pct"].le(cfg.option_moneyness_pct)
     out["liquidity_eligible"] = (out["quote_valid"] & out["premium_ok"] & out["spread_ok"]
                                   & out["volume_ok"] & out["oi_ok"] & out["moneyness_ok"])
     out["liquidity_status"] = out.apply(
