@@ -13,7 +13,8 @@ from .config import Settings, settings
 from .db import Store
 from .execution import stage_paper_trade, stage_live_order, stage_live_exit, close_paper_trade
 from .levels import build_levels
-from .option_chain import normalize_option_chain, attach_snapshot_change, chain_summary, choose_expiry
+from .option_chain import (normalize_option_chain, attach_snapshot_change, chain_summary, choose_expiry,
+                           is_within_otm_band, otm_distance_points)
 from .risk import pretrade_gate
 from .strategy import evaluate_signals
 from .upstox import UpstoxClient
@@ -231,6 +232,7 @@ class TradingEngine:
         return events
 
     def run_once(self, *, now: datetime | None = None, execute_paper: bool = True) -> dict:
+        supplied_now = now is not None
         ts = pd.Timestamp(now or datetime.now(IST))
         ts = ts.tz_localize(IST) if ts.tzinfo is None else ts.tz_convert(IST)
         reconciliation_events = self._reconcile_live_orders()
@@ -292,6 +294,14 @@ class TradingEngine:
                 "option_oi": float(option.get("oi") or 0),
                 "option_bid_qty": int(option.get("bid_qty") or 0),
                 "option_ask_qty": int(option.get("ask_qty") or 0),
+                "otm_distance_points": float(option.get("otm_distance_points", otm_distance_points(
+                    str(option["option_type"]), float(option["strike"]), spot))),
+                "option_selection_mode": str(getattr(self.cfg, "option_selection_mode", "NEAR_ATM")),
+                "option_otm_min_points": float(getattr(self.cfg, "option_otm_min_points", 150.0)),
+                "option_otm_max_points": float(getattr(self.cfg, "option_otm_max_points", 200.0)),
+                "option_delta": option.get("delta"), "option_iv": option.get("iv"),
+                "option_theta": option.get("theta"), "option_gamma": option.get("gamma"),
+                "option_vega": option.get("vega"),
                 "liquidity_score": float(option.get("score", option.get("liquidity_score", 0)) or 0),
                 "liquidity_status": str(option.get("liquidity_status", "UNKNOWN")),
             })
@@ -331,8 +341,10 @@ class TradingEngine:
             if pd.notna(option_ts):
                 option_ts = option_ts.tz_localize(IST) if option_ts.tzinfo is None else option_ts.tz_convert(IST)
                 option_age = max(0.0, (ts - option_ts).total_seconds())
+        refreshed_at = ts if supplied_now else pd.Timestamp.now(tz=IST)
         result = {
-            "timestamp": ts.isoformat(), "spot": spot, "latest_candle": candles.iloc[-1].to_dict(),
+            "timestamp": refreshed_at.isoformat(), "market_data_requested_at": ts.isoformat(),
+            "spot": spot, "latest_candle": candles.iloc[-1].to_dict(),
             "candles": candles, "daily": daily, "levels": levels,
             "signals": processed, "indicator_context": context,
             "options": option_frame, "option_summary": summary, "front_expiry": front_expiry,
@@ -342,7 +354,7 @@ class TradingEngine:
         }
         for event in events:
             self.store.save_event(event, event_timestamp=ts.isoformat())
-        self.store.set_state("last_refresh", ts.isoformat())
+        self.store.set_state("last_refresh", refreshed_at.isoformat())
         return result
 
     def load_last_snapshot(self, *, now: datetime | None = None) -> dict | None:
@@ -457,6 +469,12 @@ class TradingEngine:
             raise RuntimeError("Selected option contract is no longer present in current chain")
         option = selected.iloc[-1].to_dict()
         option["lot_size"] = int(sig["lot_size"])
+        if not is_within_otm_band(str(option["option_type"]), float(option["strike"]), spot_now, self.cfg):
+            distance = otm_distance_points(str(option["option_type"]), float(option["strike"]), spot_now)
+            raise RuntimeError(
+                f"Selected contract is now {distance:.1f} points OTM and outside the configured "
+                f"{self.cfg.option_otm_min_points:.0f}-{self.cfg.option_otm_max_points:.0f} point band"
+            )
         spread = (float(option["ask"]) - float(option["bid"])) / float(option["ask"]) if float(option["ask"]) > 0 else 1.0
         if float(option["bid"]) <= 0 or float(option["ask"]) <= 0 or spread > self.cfg.max_spread_pct:
             raise RuntimeError("Live contract quote is unavailable or spread exceeds the configured limit")
