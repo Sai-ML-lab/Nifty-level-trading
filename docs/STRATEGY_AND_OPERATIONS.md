@@ -33,7 +33,14 @@ For each expiry queried:
 - OI, ΔOI and PCR are context/display data only in this version; they do not gate entries because no numerical thresholds or directional interpretation were frozen.
 - Max call/put OI strikes are reported by strike aggregation.
 
-Bullish signals select calls; bearish signals select puts. Candidates are filtered by premium range, positive bid, ask >= bid, maximum bid/ask spread, minimum volume/OI and near-ATM distance. Eligible contracts across the nearest available expiries are scored by liquidity, spread, ATM distance and days to expiry. This score is a ranking heuristic, not a predictive model.
+Bullish signals select calls; bearish signals select puts. Default OPTION_SELECTION_MODE=OTM_BAND applies a hard directional strike-distance filter using the same NIFTY spot close used for signal evaluation:
+- LONG: CE strike must be 150-200 index points above NIFTY spot.
+- SHORT: PE strike must be 150-200 index points below NIFTY spot.
+- Boundaries are inclusive. ATM, ITM, less than 150 points OTM and more than 200 points OTM contracts are rejected.
+- If no contract in the band passes quote, premium, spread, volume and OI filters, the result is NO_ELIGIBLE_OPTION; there is no fallback to ATM or another moneyness band.
+- Eligible contracts across available expiries are ranked by quote liquidity, spread and expiry suitability. The score is a contract-ranking heuristic, not a predictive model.
+
+The previous near-ATM approach remains available only when OPTION_SELECTION_MODE=NEAR_ATM is explicitly configured with OPTION_MONEYNESS_PCT. The default paper configuration is OTM_BAND to match the stated 150-200 point preference. The dashboard records selected OTM distance, strike, expiry, premium, bid/ask, spread, volume, OI and available Greeks (delta, IV, theta, gamma and vega). The live-order path rechecks the band using a fresh NIFTY spot close both before staging and immediately before submission.
 
 ## 5. Risk and execution
 
