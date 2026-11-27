@@ -30,7 +30,8 @@ nifty-level-trader/
 │   ├── upstox.py          # Upstox REST market-data and order client
 │   ├── levels.py          # PDH/PDL/PDC, ORH/ORL, confirmed pivots
 │   ├── indicators.py      # SMA, RSI, ATR, divergence, 5m FVG
-│   ├── option_chain.py    # OI, ΔOI, PCR and contract selection
+│   ├── option_chain.py    # OI, ΔOI, PCR and directional OTM contract selection
+│   ├── market_clock.py    # IST candle windows and next-close timing
 │   ├── strategy.py        # breakout/breakdown + immediate/retest signals
 │   ├── risk.py            # NSE-hours, daily loss, sizing and exposure gates
 │   ├── execution.py       # paper fills and approval-gated live orders
